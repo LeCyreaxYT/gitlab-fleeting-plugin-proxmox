@@ -189,7 +189,8 @@ func (ig *InstanceGroup) Update(ctx context.Context, update func(instance string
 		var state provider.State
 
 		switch member.Name {
-		case ig.InstanceNameCreating:
+		case ig.InstanceNameCreating, ig.InstanceNameStarting:
+			// Creating and starting instances are not ready yet
 			state = provider.StateCreating
 		case ig.InstanceNameIdle, ig.InstanceNameRunning:
 			// Both idle and running instances are reported as running to the autoscaler

@@ -31,6 +31,7 @@ const (
 
 	DefaultInstanceNameCreating = "fleeting-creating"
 	DefaultInstanceNameIdle     = "fleeting-idle"
+	DefaultInstanceNameStarting = "fleeting-starting"
 	DefaultInstanceNameRunning  = "fleeting-running"
 	DefaultInstanceNameRemoving = "fleeting-removing"
 
@@ -74,6 +75,9 @@ type Settings struct {
 	// Name to set for idle instances (cloned but not started).
 	InstanceNameIdle string `json:"instance_name_idle"`
 
+	// Name to set for instances that are starting up.
+	InstanceNameStarting string `json:"instance_name_starting"`
+
 	// Name to set for running instances.
 	InstanceNameRunning string `json:"instance_name_running"`
 
@@ -108,6 +112,10 @@ func (s *Settings) FillWithDefaults() {
 
 	if s.InstanceNameIdle == "" {
 		s.InstanceNameIdle = DefaultInstanceNameIdle
+	}
+
+	if s.InstanceNameStarting == "" {
+		s.InstanceNameStarting = DefaultInstanceNameStarting
 	}
 
 	if s.InstanceNameRunning == "" {

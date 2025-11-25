@@ -104,13 +104,29 @@ func (ig *InstanceGroup) startAndConfigureInstance(ctx context.Context, vm *prox
 
 // startIdleInstance starts an idle VM and renames it to running.
 func (ig *InstanceGroup) startIdleInstance(ctx context.Context, vm *proxmox.VirtualMachine, vmid int) error {
+	// Mark as starting first
+	_, renameErr := vm.Config(ctx, proxmox.VirtualMachineOption{
+		Name:  "name",
+		Value: ig.InstanceNameStarting,
+	})
+	if renameErr != nil {
+		ig.log.Error("failed to rename instance to starting", "vmid", vmid, "err", renameErr)
+	}
+
 	// Start and wait for agent
 	err := ig.startAndConfigureInstance(ctx, vm, vmid)
 	if err != nil {
 		// Mark as removing if start fails
 		ig.log.Error("failed to start idle instance, marking for removal", "vmid", vmid, "err", err)
 
-		_, renameErr := vm.Config(ctx, proxmox.VirtualMachineOption{
+		// Reload VM to get fresh state before renaming
+		freshVM, reloadErr := ig.getProxmoxVM(ctx, vmid)
+		if reloadErr != nil {
+			ig.log.Error("failed to reload VM for rename", "vmid", vmid, "err", reloadErr)
+			return err
+		}
+
+		_, renameErr := freshVM.Config(ctx, proxmox.VirtualMachineOption{
 			Name:  "name",
 			Value: ig.InstanceNameRemoving,
 		})
@@ -121,13 +137,22 @@ func (ig *InstanceGroup) startIdleInstance(ctx context.Context, vm *proxmox.Virt
 		return err
 	}
 
+	// Reload VM to get fresh state after start before renaming
+	freshVM, err := ig.getProxmoxVM(ctx, vmid)
+	if err != nil {
+		ig.log.Error("failed to reload VM after start", "vmid", vmid, "err", err)
+		// VM is running but we couldn't rename it - not critical
+		return nil
+	}
+
 	// Rename to running
-	_, renameErr := vm.Config(ctx, proxmox.VirtualMachineOption{
+	_, renameErr = freshVM.Config(ctx, proxmox.VirtualMachineOption{
 		Name:  "name",
 		Value: ig.InstanceNameRunning,
 	})
 	if renameErr != nil {
 		ig.log.Error("failed to rename instance to running", "vmid", vmid, "err", renameErr)
+		// VM is running but rename failed - log but don't fail
 	}
 
 	ig.log.Info("idle instance started successfully", "vmid", vmid)
@@ -190,9 +215,9 @@ func (ig *InstanceGroup) markStaleInstancesForRemoval(ctx context.Context) error
 			continue
 		}
 
-		// Always clean up instances that were being created (incomplete)
-		if member.Name == ig.InstanceNameCreating {
-			ig.log.Info("Found stale creating instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
+		// Always clean up instances that were being created or starting (incomplete)
+		if member.Name == ig.InstanceNameCreating || member.Name == ig.InstanceNameStarting {
+			ig.log.Info("Found stale instance in transitional state, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
 			instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
 			continue
 		}
