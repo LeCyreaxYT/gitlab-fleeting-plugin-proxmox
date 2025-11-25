@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,26 +42,23 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 		return VMID, fmt.Errorf("failed to find newly deployed instance vmid='%d': %w", VMID, err)
 	}
 
-	// Start, configure etc.
-	err = func() error {
-		// Start the VM
-		task, err := vm.Start(ctx)
-		if err == nil {
-			err = task.Wait(ctx, proxmoxTaskWaitInterval, proxmoxTaskWaitTimeout)
+	// If lazy start is enabled, just mark as idle and don't start
+	if ig.LazyStartInstances {
+		ig.log.Info("lazy start enabled, instance cloned but not started", "vmid", VMID)
+
+		_, renameErr := vm.Config(ctx, proxmox.VirtualMachineOption{
+			Name:  "name",
+			Value: ig.InstanceNameIdle,
+		})
+		if renameErr != nil {
+			ig.log.Error("failed to rename instance to idle", "vmid", VMID, "err", renameErr)
 		}
 
-		if err != nil {
-			return fmt.Errorf("failed to start newly deployed instance: %w", err)
-		}
+		return VMID, nil
+	}
 
-		// Wait for agent to start with polling
-		err = ig.waitForAgent(ctx, vm, VMID)
-		if err != nil {
-			return fmt.Errorf("failed when waiting for qemu agent to start on newly deployed instance: %w", err)
-		}
-
-		return nil
-	}()
+	// Start and configure the VM
+	err = ig.startAndConfigureInstance(ctx, vm, VMID)
 
 	newInstanceName := ig.InstanceNameRunning
 
@@ -82,6 +80,60 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 	}
 
 	return VMID, nil
+}
+
+// startAndConfigureInstance starts a VM and waits for the QEMU agent to be ready.
+func (ig *InstanceGroup) startAndConfigureInstance(ctx context.Context, vm *proxmox.VirtualMachine, vmid int) error {
+	// Start the VM
+	task, err := vm.Start(ctx)
+	if err == nil {
+		err = task.Wait(ctx, proxmoxTaskWaitInterval, proxmoxTaskWaitTimeout)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to start instance: %w", err)
+	}
+
+	// Wait for agent to start with polling
+	err = ig.waitForAgent(ctx, vm, vmid)
+	if err != nil {
+		return fmt.Errorf("failed when waiting for qemu agent to start: %w", err)
+	}
+
+	return nil
+}
+
+// startIdleInstance starts an idle VM and renames it to running.
+func (ig *InstanceGroup) startIdleInstance(ctx context.Context, vm *proxmox.VirtualMachine, vmid int) error {
+	// Start and wait for agent
+	err := ig.startAndConfigureInstance(ctx, vm, vmid)
+	if err != nil {
+		// Mark as removing if start fails
+		ig.log.Error("failed to start idle instance, marking for removal", "vmid", vmid, "err", err)
+
+		_, renameErr := vm.Config(ctx, proxmox.VirtualMachineOption{
+			Name:  "name",
+			Value: ig.InstanceNameRemoving,
+		})
+		if renameErr != nil {
+			ig.log.Error("failed to rename failed instance to removing", "vmid", vmid, "err", renameErr)
+		}
+
+		return err
+	}
+
+	// Rename to running
+	_, renameErr := vm.Config(ctx, proxmox.VirtualMachineOption{
+		Name:  "name",
+		Value: ig.InstanceNameRunning,
+	})
+	if renameErr != nil {
+		ig.log.Error("failed to rename instance to running", "vmid", vmid, "err", renameErr)
+	}
+
+	ig.log.Info("idle instance started successfully", "vmid", vmid)
+
+	return nil
 }
 
 func (ig *InstanceGroup) cloneTemplate(ctx context.Context, template *proxmox.VirtualMachine, cloneMu *sync.Mutex) (int, *proxmox.Task, error) {
@@ -140,17 +192,27 @@ func (ig *InstanceGroup) markStaleInstancesForRemoval(ctx context.Context) error
 		}
 
 		// Always clean up instances that were being created (incomplete)
-		if member.Name == ig.InstanceNameCreating {
+		// Use prefix matching to catch instances from previous runner sessions with different identifiers
+		if member.Name == ig.InstanceNameCreating || ig.isInstanceNameMatch(member.Name, "creating") {
 			ig.log.Info("Found stale creating instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
 			instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
 			continue
 		}
 
-		// Optionally clean up running instances (orphaned after crash/restart)
-		if ig.CleanupRunningOnInit && member.Name == ig.InstanceNameRunning {
-			ig.log.Info("Found orphaned running instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
-			instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
-			continue
+		// Optionally clean up idle and running instances (orphaned after crash/restart)
+		// Use prefix matching to catch instances from previous runner sessions with different identifiers
+		if ig.CleanupRunningOnInit {
+			if ig.isInstanceNameMatch(member.Name, "idle") {
+				ig.log.Info("Found orphaned idle instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
+				instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
+				continue
+			}
+
+			if ig.isInstanceNameMatch(member.Name, "running") {
+				ig.log.Info("Found orphaned running instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
+				instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
+				continue
+			}
 		}
 	}
 
@@ -209,6 +271,12 @@ func (ig *InstanceGroup) markInstancesForRemoval(ctx context.Context, instances 
 
 func (ig *InstanceGroup) isProxmoxResourceAnInstance(member proxmox.ClusterResource) bool {
 	return member.VMID != uint64(*ig.TemplateID)
+}
+
+// isInstanceNameMatch checks if a VM name matches the configured prefix and suffix pattern.
+// e.g., with prefix "fleeting-" and suffix "running", matches "fleeting-abc123-running"
+func (ig *InstanceGroup) isInstanceNameMatch(name string, suffix string) bool {
+	return strings.HasPrefix(name, ig.InstanceNamePrefix) && strings.HasSuffix(name, "-"+suffix)
 }
 
 // findNextAvailableVMID finds the next available VMID within the configured range.

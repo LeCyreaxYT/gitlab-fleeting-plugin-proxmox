@@ -1,8 +1,11 @@
 package plugin
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var (
@@ -30,8 +33,12 @@ const (
 	DefaultInstanceNetworkProtocol  = NetworkProtocolIPv4
 
 	DefaultInstanceNameCreating = "fleeting-creating"
+	DefaultInstanceNameIdle     = "fleeting-idle"
 	DefaultInstanceNameRunning  = "fleeting-running"
 	DefaultInstanceNameRemoving = "fleeting-removing"
+
+	// Default prefix for matching instances during cleanup (used when %s placeholder is present).
+	DefaultInstanceNamePrefix = "fleeting-"
 
 	// Default VMID range low and high values.
 	DefaultVMIDRangeLow  = 1000
@@ -70,11 +77,19 @@ type Settings struct {
 	// Name to set for instances during creation.
 	InstanceNameCreating string `json:"instance_name_creating"`
 
+	// Name to set for idle instances (cloned but not started).
+	InstanceNameIdle string `json:"instance_name_idle"`
+
 	// Name to set for running instances.
 	InstanceNameRunning string `json:"instance_name_running"`
 
 	// Name to set for instances during removal.
 	InstanceNameRemoving string `json:"instance_name_removing"`
+
+	// Prefix used to identify instances belonging to this plugin during cleanup.
+	// Automatically derived from instance names if %s placeholder is used.
+	// Can be manually set for custom cleanup behavior.
+	InstanceNamePrefix string `json:"instance_name_prefix"`
 
 	// Additional: vmid low to high range for instance VMs.
 	VMIDRangeLow  *int `json:"vmid_range_low,omitempty"`
@@ -82,7 +97,12 @@ type Settings struct {
 
 	// If true, running instances will be marked for removal on plugin init.
 	// This is useful to clean up orphaned VMs after a runner crash/restart.
+	// When using %s placeholder, this will match ALL instances with the same prefix.
 	CleanupRunningOnInit bool `json:"cleanup_running_on_init"`
+
+	// If true, instances will be cloned but not started until needed.
+	// This reduces resource usage for idle instances.
+	LazyStartInstances bool `json:"lazy_start_instances"`
 }
 
 func (s *Settings) FillWithDefaults() {
@@ -96,6 +116,10 @@ func (s *Settings) FillWithDefaults() {
 
 	if s.InstanceNameCreating == "" {
 		s.InstanceNameCreating = DefaultInstanceNameCreating
+	}
+
+	if s.InstanceNameIdle == "" {
+		s.InstanceNameIdle = DefaultInstanceNameIdle
 	}
 
 	if s.InstanceNameRunning == "" {
@@ -119,6 +143,48 @@ func (s *Settings) FillWithDefaults() {
 		s.VMIDRangeHigh = new(int)
 		*s.VMIDRangeHigh = DefaultVMIDRangeHigh
 	}
+
+	// Replace %s placeholder in instance names with a random identifier
+	s.applyInstanceNameIdentifier()
+}
+
+// applyInstanceNameIdentifier replaces %s in instance names with a random 6-character identifier.
+// This allows multiple runners to use the same pool without name conflicts.
+// It also derives the InstanceNamePrefix from the name pattern for cleanup matching.
+func (s *Settings) applyInstanceNameIdentifier() {
+	// Derive prefix from the pattern before %s (for cleanup matching)
+	// e.g., "fleeting-%s-running" -> prefix = "fleeting-"
+	if s.InstanceNamePrefix == "" {
+		s.InstanceNamePrefix = deriveInstanceNamePrefix(s.InstanceNameCreating)
+	}
+
+	identifier := generateRandomIdentifier(6)
+
+	s.InstanceNameCreating = strings.ReplaceAll(s.InstanceNameCreating, "%s", identifier)
+	s.InstanceNameIdle = strings.ReplaceAll(s.InstanceNameIdle, "%s", identifier)
+	s.InstanceNameRunning = strings.ReplaceAll(s.InstanceNameRunning, "%s", identifier)
+	s.InstanceNameRemoving = strings.ReplaceAll(s.InstanceNameRemoving, "%s", identifier)
+}
+
+// deriveInstanceNamePrefix extracts the prefix before %s placeholder.
+// e.g., "fleeting-%s-running" -> "fleeting-"
+// If no %s is found, returns the default prefix.
+func deriveInstanceNamePrefix(namePattern string) string {
+	if idx := strings.Index(namePattern, "%s"); idx > 0 {
+		return namePattern[:idx]
+	}
+	return DefaultInstanceNamePrefix
+}
+
+// generateRandomIdentifier generates a random hex string of the specified length.
+func generateRandomIdentifier(length int) string {
+	bytes := make([]byte, (length+1)/2)
+	_, err := rand.Read(bytes)
+	if err != nil {
+		// Fallback to a fixed string if random generation fails
+		return "000000"[:length]
+	}
+	return hex.EncodeToString(bytes)[:length]
 }
 
 func (s *Settings) CheckRequiredFields() error {

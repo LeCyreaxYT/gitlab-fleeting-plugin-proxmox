@@ -191,7 +191,8 @@ func (ig *InstanceGroup) Update(ctx context.Context, update func(instance string
 		switch member.Name {
 		case ig.InstanceNameCreating:
 			state = provider.StateCreating
-		case ig.InstanceNameRunning:
+		case ig.InstanceNameIdle, ig.InstanceNameRunning:
+			// Both idle and running instances are reported as running to the autoscaler
 			state = provider.StateRunning
 		case ig.InstanceNameRemoving:
 			state = provider.StateDeleting
@@ -215,6 +216,22 @@ func (ig *InstanceGroup) ConnectInfo(ctx context.Context, instance string) (prov
 	vm, err := ig.getProxmoxVM(ctx, VMID)
 	if err != nil {
 		return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance vmid='%d': %w", VMID, err)
+	}
+
+	// If the VM is idle (lazy start), start it now
+	if vm.Name == ig.InstanceNameIdle {
+		ig.log.Info("starting idle instance on demand", "vmid", VMID)
+
+		err = ig.startIdleInstance(ctx, vm, VMID)
+		if err != nil {
+			return provider.ConnectInfo{}, fmt.Errorf("failed to start idle instance vmid='%d': %w", VMID, err)
+		}
+
+		// Refresh VM info after starting
+		vm, err = ig.getProxmoxVM(ctx, VMID)
+		if err != nil {
+			return provider.ConnectInfo{}, fmt.Errorf("failed to retrieve instance after start vmid='%d': %w", VMID, err)
+		}
 	}
 
 	return ig.getConnectInfoFromVM(ctx, instance, vm)
