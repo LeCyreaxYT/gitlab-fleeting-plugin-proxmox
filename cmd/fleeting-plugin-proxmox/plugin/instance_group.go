@@ -141,39 +141,31 @@ func (ig *InstanceGroup) Increase(ctx context.Context, count int) (int, error) {
 		return 0, fmt.Errorf("failed to find template with id='%d': %w", *ig.TemplateID, err)
 	}
 
-	var (
-		errorGroup = new(errgroup.Group)
-
-		succeeded   = 0
-		succeededMu = new(sync.Mutex)
-
-		// We need to mutex cloning as Proxmox will fail multiple requests in parallel
-		cloneMu = new(sync.Mutex)
-	)
-
 	ig.instanceCloningMu.Lock()
 	defer ig.instanceCloningMu.Unlock()
 
-	for range count {
-		errorGroup.Go(func() error {
-			vmid, err := ig.deployInstance(ctx, template, cloneMu)
-			if err != nil {
-				ig.log.Error("failed to deploy an instance", "vmid", vmid, "err", err)
-				return err
-			}
+	// We need a mutex for cloning as Proxmox will fail multiple requests in parallel
+	cloneMu := new(sync.Mutex)
 
-			ig.log.Info("successfully deployed instance", "vmid", vmid)
-			succeededMu.Lock()
-			succeeded++
-			succeededMu.Unlock()
+	succeeded := 0
 
-			return nil
-		})
+	// Deploy instances sequentially to reduce server load
+	for i := range count {
+		ig.log.Info("deploying instance", "index", i+1, "total", count)
+
+		vmid, err := ig.deployInstance(ctx, template, cloneMu)
+		if err != nil {
+			ig.log.Error("failed to deploy an instance", "vmid", vmid, "err", err)
+			// Continue with next instance instead of failing completely
+			continue
+		}
+
+		ig.log.Info("successfully deployed instance", "vmid", vmid)
+		succeeded++
 	}
 
-	err = errorGroup.Wait()
-	if err != nil {
-		return succeeded, fmt.Errorf("failed to create one or more instances: %w", err)
+	if succeeded < count {
+		return succeeded, fmt.Errorf("failed to create all instances: %d/%d succeeded", succeeded, count)
 	}
 
 	return succeeded, nil
