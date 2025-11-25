@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -192,23 +191,21 @@ func (ig *InstanceGroup) markStaleInstancesForRemoval(ctx context.Context) error
 		}
 
 		// Always clean up instances that were being created (incomplete)
-		// Use prefix matching to catch instances from previous runner sessions with different identifiers
-		if member.Name == ig.InstanceNameCreating || ig.isInstanceNameMatch(member.Name, "creating") {
+		if member.Name == ig.InstanceNameCreating {
 			ig.log.Info("Found stale creating instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
 			instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
 			continue
 		}
 
 		// Optionally clean up idle and running instances (orphaned after crash/restart)
-		// Use prefix matching to catch instances from previous runner sessions with different identifiers
 		if ig.CleanupRunningOnInit {
-			if ig.isInstanceNameMatch(member.Name, "idle") {
+			if member.Name == ig.InstanceNameIdle {
 				ig.log.Info("Found orphaned idle instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
 				instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
 				continue
 			}
 
-			if ig.isInstanceNameMatch(member.Name, "running") {
+			if member.Name == ig.InstanceNameRunning {
 				ig.log.Info("Found orphaned running instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
 				instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
 				continue
@@ -271,12 +268,6 @@ func (ig *InstanceGroup) markInstancesForRemoval(ctx context.Context, instances 
 
 func (ig *InstanceGroup) isProxmoxResourceAnInstance(member proxmox.ClusterResource) bool {
 	return member.VMID != uint64(*ig.TemplateID)
-}
-
-// isInstanceNameMatch checks if a VM name matches the configured prefix and suffix pattern.
-// e.g., with prefix "fleeting-" and suffix "running", matches "fleeting-abc123-running"
-func (ig *InstanceGroup) isInstanceNameMatch(name string, suffix string) bool {
-	return strings.HasPrefix(name, ig.InstanceNamePrefix) && strings.HasSuffix(name, "-"+suffix)
 }
 
 // findNextAvailableVMID finds the next available VMID within the configured range.
