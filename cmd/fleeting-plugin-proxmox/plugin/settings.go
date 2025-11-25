@@ -32,6 +32,10 @@ const (
 	DefaultInstanceNameCreating = "fleeting-creating"
 	DefaultInstanceNameRunning  = "fleeting-running"
 	DefaultInstanceNameRemoving = "fleeting-removing"
+
+	// Default VMID range low and high values.
+	DefaultVMIDRangeLow  = 1000
+	DefaultVMIDRangeHigh = 2000
 )
 
 // Plguin settings.
@@ -71,6 +75,10 @@ type Settings struct {
 
 	// Name to set for instances during removal.
 	InstanceNameRemoving string `json:"instance_name_removing"`
+
+	// Additional: vmid low to high range for instance VMs.
+	VMIDRangeLow  *int `json:"vmid_range_low,omitempty"`
+	VMIDRangeHigh *int `json:"vmid_range_high,omitempty"`
 }
 
 func (s *Settings) FillWithDefaults() {
@@ -96,6 +104,16 @@ func (s *Settings) FillWithDefaults() {
 
 	if s.InstanceNetworkProtocol == "" {
 		s.InstanceNetworkProtocol = DefaultInstanceNetworkProtocol
+	}
+
+	if s.VMIDRangeLow == nil {
+		s.VMIDRangeLow = new(int)
+		*s.VMIDRangeLow = DefaultVMIDRangeLow
+	}
+
+	if s.VMIDRangeHigh == nil {
+		s.VMIDRangeHigh = new(int)
+		*s.VMIDRangeHigh = DefaultVMIDRangeHigh
 	}
 }
 

@@ -17,7 +17,10 @@ const (
 	proxmoxAgentStartTimeout = 2 * time.Minute
 )
 
-var ErrCloneVMWithoutConfiguredStorage = errors.New("attempted to clone a VM without configured storage")
+var (
+	ErrCloneVMWithoutConfiguredStorage = errors.New("attempted to clone a VM without configured storage")
+	ErrNoAvailableVMID                 = errors.New("no available VMID in configured range")
+)
 
 func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.VirtualMachine, cloneMu *sync.Mutex) (int, error) {
 	VMID, task, err := ig.cloneTemplate(ctx, template, cloneMu)
@@ -80,7 +83,7 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 }
 
 func (ig *InstanceGroup) cloneTemplate(ctx context.Context, template *proxmox.VirtualMachine, cloneMu *sync.Mutex) (int, *proxmox.Task, error) {
-	cloneOptions, err := ig.getTemplateCloneOptions(template)
+	cloneOptions, err := ig.getTemplateCloneOptions(ctx, template)
 	if err != nil {
 		return -1, nil, err
 	}
@@ -96,8 +99,14 @@ func (ig *InstanceGroup) cloneTemplate(ctx context.Context, template *proxmox.Vi
 	return VMID, task, nil
 }
 
-func (ig *InstanceGroup) getTemplateCloneOptions(template *proxmox.VirtualMachine) (*proxmox.VirtualMachineCloneOptions, error) {
+func (ig *InstanceGroup) getTemplateCloneOptions(ctx context.Context, template *proxmox.VirtualMachine) (*proxmox.VirtualMachineCloneOptions, error) {
+	vmid, err := ig.findNextAvailableVMID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	cloneOptions := &proxmox.VirtualMachineCloneOptions{
+		NewID:   vmid,
 		Name:    ig.InstanceNameCreating,
 		Pool:    ig.Pool,
 		Storage: ig.Storage,
@@ -191,4 +200,26 @@ func (ig *InstanceGroup) markInstancesForRemoval(ctx context.Context, instances 
 
 func (ig *InstanceGroup) isProxmoxResourceAnInstance(member proxmox.ClusterResource) bool {
 	return member.VMID != uint64(*ig.TemplateID)
+}
+
+// findNextAvailableVMID finds the next available VMID within the configured range.
+// It iterates from VMIDRangeLow to VMIDRangeHigh and returns the first available ID.
+func (ig *InstanceGroup) findNextAvailableVMID(ctx context.Context) (int, error) {
+	cluster, err := ig.proxmox.Cluster(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get cluster: %w", err)
+	}
+
+	for vmid := *ig.VMIDRangeLow; vmid <= *ig.VMIDRangeHigh; vmid++ {
+		available, err := cluster.CheckID(ctx, vmid)
+		if err != nil {
+			return 0, fmt.Errorf("failed to check VMID %d availability: %w", vmid, err)
+		}
+
+		if available {
+			return vmid, nil
+		}
+	}
+
+	return 0, fmt.Errorf("%w: range %d-%d is full", ErrNoAvailableVMID, *ig.VMIDRangeLow, *ig.VMIDRangeHigh)
 }
