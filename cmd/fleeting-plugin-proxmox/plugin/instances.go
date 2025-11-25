@@ -83,13 +83,13 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 }
 
 func (ig *InstanceGroup) cloneTemplate(ctx context.Context, template *proxmox.VirtualMachine, cloneMu *sync.Mutex) (int, *proxmox.Task, error) {
+	cloneMu.Lock()
+	defer cloneMu.Unlock()
+
 	cloneOptions, err := ig.getTemplateCloneOptions(ctx, template)
 	if err != nil {
 		return -1, nil, err
 	}
-
-	cloneMu.Lock()
-	defer cloneMu.Unlock()
 
 	VMID, task, err := template.Clone(ctx, cloneOptions)
 	if err != nil {

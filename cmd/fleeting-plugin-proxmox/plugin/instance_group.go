@@ -159,16 +159,15 @@ func (ig *InstanceGroup) Increase(ctx context.Context, count int) (int, error) {
 			vmid, err := ig.deployInstance(ctx, template, cloneMu)
 			if err != nil {
 				ig.log.Error("failed to deploy an instance", "vmid", vmid, "err", err)
+				return err
 			}
 
 			ig.log.Info("successfully deployed instance", "vmid", vmid)
 			succeededMu.Lock()
-
 			succeeded++
-
 			succeededMu.Unlock()
 
-			return err
+			return nil
 		})
 	}
 
