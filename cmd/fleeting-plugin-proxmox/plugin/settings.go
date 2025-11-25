@@ -79,6 +79,10 @@ type Settings struct {
 	// Additional: vmid low to high range for instance VMs.
 	VMIDRangeLow  *int `json:"vmid_range_low,omitempty"`
 	VMIDRangeHigh *int `json:"vmid_range_high,omitempty"`
+
+	// If true, running instances will be marked for removal on plugin init.
+	// This is useful to clean up orphaned VMs after a runner crash/restart.
+	CleanupRunningOnInit bool `json:"cleanup_running_on_init"`
 }
 
 func (s *Settings) FillWithDefaults() {

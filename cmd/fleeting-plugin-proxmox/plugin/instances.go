@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	proxmoxTaskWaitInterval  = 10 * time.Second
-	proxmoxTaskWaitTimeout   = 5 * time.Minute
-	proxmoxAgentStartTimeout = 2 * time.Minute
+	proxmoxTaskWaitInterval       = 10 * time.Second
+	proxmoxTaskWaitTimeout        = 5 * time.Minute
+	proxmoxAgentCheckInterval     = 15 * time.Second
+	proxmoxAgentStartTimeout      = 10 * time.Minute
+	proxmoxAgentMaxCheckAttempts  = int(proxmoxAgentStartTimeout / proxmoxAgentCheckInterval) // 40 attempts
 )
 
 var (
@@ -51,8 +53,8 @@ func (ig *InstanceGroup) deployInstance(ctx context.Context, template *proxmox.V
 			return fmt.Errorf("failed to start newly deployed instance: %w", err)
 		}
 
-		// Wait for agent to start
-		err = vm.WaitForAgent(ctx, int(proxmoxAgentStartTimeout/time.Second))
+		// Wait for agent to start with polling
+		err = ig.waitForAgent(ctx, vm, VMID)
 		if err != nil {
 			return fmt.Errorf("failed when waiting for qemu agent to start on newly deployed instance: %w", err)
 		}
@@ -137,12 +139,19 @@ func (ig *InstanceGroup) markStaleInstancesForRemoval(ctx context.Context) error
 			continue
 		}
 
-		if member.Name != ig.InstanceNameCreating {
+		// Always clean up instances that were being created (incomplete)
+		if member.Name == ig.InstanceNameCreating {
+			ig.log.Info("Found stale creating instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
+			instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
 			continue
 		}
 
-		ig.log.Info("Found stale instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
-		instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
+		// Optionally clean up running instances (orphaned after crash/restart)
+		if ig.CleanupRunningOnInit && member.Name == ig.InstanceNameRunning {
+			ig.log.Info("Found orphaned running instance, marking for removal", "name", member.Name, "vmid", member.VMID, "node", member.Node)
+			instancesToMarkForRemoval = append(instancesToMarkForRemoval, &member)
+			continue
+		}
 	}
 
 	if len(instancesToMarkForRemoval) < 1 {
@@ -222,4 +231,41 @@ func (ig *InstanceGroup) findNextAvailableVMID(ctx context.Context) (int, error)
 	}
 
 	return 0, fmt.Errorf("%w: range %d-%d is full", ErrNoAvailableVMID, *ig.VMIDRangeLow, *ig.VMIDRangeHigh)
+}
+
+// waitForAgent polls the QEMU agent until it responds or timeout is reached.
+// It checks every proxmoxAgentCheckInterval (15s) up to proxmoxAgentMaxCheckAttempts (40 attempts = 10min).
+func (ig *InstanceGroup) waitForAgent(ctx context.Context, vm *proxmox.VirtualMachine, vmid int) error {
+	ticker := time.NewTicker(proxmoxAgentCheckInterval)
+	defer ticker.Stop()
+
+	deadline := time.Now().Add(proxmoxAgentStartTimeout)
+	attempt := 0
+
+	for {
+		attempt++
+		ig.log.Debug("checking if qemu agent is ready", "vmid", vmid, "attempt", attempt, "max_attempts", proxmoxAgentMaxCheckAttempts)
+
+		// Try to get agent info - if it works, the agent is ready
+		_, err := vm.AgentOsInfo(ctx)
+		if err == nil {
+			ig.log.Info("qemu agent is ready", "vmid", vmid, "attempts", attempt)
+			return nil
+		}
+
+		ig.log.Debug("qemu agent not ready yet", "vmid", vmid, "attempt", attempt, "err", err)
+
+		// Check if we've exceeded the deadline
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout after %d attempts waiting for qemu agent", attempt)
+		}
+
+		// Check if context was cancelled
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Continue to next attempt
+		}
+	}
 }
