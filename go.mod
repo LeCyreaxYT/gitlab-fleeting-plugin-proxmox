@@ -1,9 +1,8 @@
 module github.com/LeCyreaxYT/gitlab-fleeting-plugin-proxmox
 
-go 1.25.2
+go 1.24.3
 
 require (
-	github.com/LeCyreaxYT/gitlab-fleeting-plugin-proxmox v0.1.3
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/luthermonson/go-proxmox v0.2.3
 	github.com/stretchr/testify v1.11.1
