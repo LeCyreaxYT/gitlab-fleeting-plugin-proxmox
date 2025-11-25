@@ -205,7 +205,7 @@ github.com/djherbis/times/LICENSE:
 	SOFTWARE.
 	
 
-github.com/dxas90/gitlab-fleeting-plugin-proxmox/LICENSE:
+github.com/LeCyreaxYT/gitlab-fleeting-plugin-proxmox/LICENSE:
 
 	MIT License
 	
